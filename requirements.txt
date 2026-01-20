@@ -12,3 +12,7 @@ lightgbm
 pytest
 pytest-asyncio
 httpx
+
+#addon
+requests
+pytz
