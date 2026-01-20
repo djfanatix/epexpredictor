@@ -7,13 +7,14 @@ arch:
   - amd64
   - arm64
   - armv7
+  - armhf
+  - aarch64
+  - i386
 startup: services
 boot: auto
-
 options:
   entsoe_api_key: ""
   timezone: "Europe/Brussels"
-
 schema:
   entsoe_api_key: str
   timezone: str

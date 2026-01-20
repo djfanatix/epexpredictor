@@ -1,0 +1,7 @@
+{
+  "build_from": {
+    "aarch64": "ghcr.io/s1adem4n/tado-api-proxy:latest",
+    "amd64": "ghcr.io/s1adem4n/tado-api-proxy:latest",
+    "armv7": "ghcr.io/s1adem4n/tado-api-proxy:latest"
+  }
+}
