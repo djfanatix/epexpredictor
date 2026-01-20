@@ -1,14 +1,19 @@
 name: "EPEX Price Predictor (BE)"
 slug: epex_price_predictor
-version: "1.0.0"
+version: "1.1.0"
 description: "Belgian day-ahead price prediction using ELIA + ENTSO-E"
-startup: services
-boot: auto
+url: https://github.com/djfanatix/epex-price-predictor
 arch:
   - amd64
   - arm64
   - armv7
+startup: services
+boot: auto
+
 options:
   entsoe_api_key: ""
+  timezone: "Europe/Brussels"
+
 schema:
   entsoe_api_key: str
+  timezone: str
