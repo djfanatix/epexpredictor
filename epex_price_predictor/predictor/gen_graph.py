@@ -7,12 +7,12 @@ from datetime import datetime, timedelta
 import pandas as pd
 import matplotlib.pyplot as plt
 from model.pricepredictor import PricePredictor
-from model.priceregion import PriceRegion
+from model.priceregion import PriceRegionName
 
 START = datetime.fromisoformat("2026-01-01T00:00:00Z")
 END = datetime.fromisoformat("2026-01-21T00:00:00Z")
 LEARN_DAYS = 120
-REGION = PriceRegion.DE
+REGION = PriceRegionName.DE.to_region()
 
 async def main():
     logging.basicConfig(
@@ -20,7 +20,7 @@ async def main():
         level=logging.INFO
     )
 
-    pred = PricePredictor(REGION, ".")
+    pred = await PricePredictor(REGION, ".").load_from_persistence()
 
     learn_start = START - timedelta(days=LEARN_DAYS)
     learn_end = START

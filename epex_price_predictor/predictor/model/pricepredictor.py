@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import asyncio
 import logging
 import math
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,8 @@ from .auxdatastore import AuxDataStore
 from .priceregion import PriceRegion
 from .pricestore import PriceStore
 from .weatherstore import WeatherStore
+from .entsoedatastore import EntsoeDataStore
+from .gaspricestore import GasPriceStore
 
 log = logging.getLogger(__name__)
 
@@ -20,24 +23,49 @@ class PricePredictor:
     region: PriceRegion
     weatherstore: WeatherStore
     pricestore: PriceStore
+    entsoestore: EntsoeDataStore
     auxstore: AuxDataStore
+    gasstore: GasPriceStore
 
     traindata: pd.DataFrame | None = None
 
-    predictor: lgb.LGBMRegressor | None = None
+    predictor: lgb.Booster | None = None
 
     def __init__(self, region: PriceRegion, storage_dir: str | None = None):
         self.region = region
         self.weatherstore = WeatherStore(region, storage_dir)
         self.pricestore = PriceStore(region, storage_dir)
         self.auxstore = AuxDataStore(region, storage_dir)
+        self.entsoestore = EntsoeDataStore(region, storage_dir)
+        self.gasstore = GasPriceStore(region, storage_dir)
+
+    async def load_from_persistence(self):
+        await asyncio.gather(
+            self.weatherstore.load(),
+            self.pricestore.load(),
+            self.auxstore.load(),
+            self.entsoestore.load(),
+            self.gasstore.load()
+        )
+        return self
+    
+    def last_data_update(self) -> datetime:
+        return max(self.weatherstore.last_updated, self.pricestore.last_updated, self.entsoestore.last_updated, self.gasstore.last_updated)
+
+    def use_datastores_from(self, other: "PricePredictor"):
+        assert self.region.bidding_zone_entsoe == other.region.bidding_zone_entsoe
+        self.weatherstore = other.weatherstore
+        self.pricestore = other.pricestore
+        self.auxstore = other.auxstore
+        self.entsoestore = other.entsoestore
+        self.gasstore = other.gasstore
 
     def is_trained(self) -> bool:
         return self.predictor is not None
 
 
     async def train(self, start: datetime, end: datetime):
-        self.traindata = await self.prepare_dataframe(start, end, True)
+        self.traindata = await self.prepare_dataframe(start, end)
         if self.traindata is None:
             return
         self.traindata.dropna(inplace=True)
@@ -45,22 +73,20 @@ class PricePredictor:
         params = self.traindata.drop(columns=["price"])
         output = self.traindata["price"]
 
-        self.predictor = lgb.LGBMRegressor(
-            n_estimators=100,
-            learning_rate=0.1,
-            max_depth=-1,
-            num_leaves=31,
-            force_col_wise=True,
-            verbosity=-1
-        )
-        self.predictor.fit(params, output)
+        lgb_dataset = lgb.Dataset(params, label=output)
+        params_lgb = {
+            "force_col_wise": True,
+            "verbosity": -1,
+        }
+
+        self.predictor = await asyncio.to_thread(lgb.train, params=params_lgb, train_set=lgb_dataset)
 
 
 
     async def predict(self, start: datetime, end: datetime, fill_known=True) -> pd.DataFrame:
         assert self.is_trained() and self.predictor is not None
 
-        df = await self.prepare_dataframe(start, end, False)
+        df = await self.prepare_dataframe(start, end)
         assert df is not None
 
         prices_known = df["price"]
@@ -87,43 +113,38 @@ class PricePredictor:
 
 
 
-    async def prepare_dataframe(self, start: datetime, end: datetime, refresh_prices: bool = True) -> pd.DataFrame | None:
-        weather = await self.weatherstore.get_data(start, end)
-        if refresh_prices:
-            prices = await self.pricestore.get_data(start, end)
-        else:
-            prices = self.pricestore.get_known_data(start, end)
-        auxdata = await self.auxstore.get_data(start, end)
+    async def prepare_dataframe(self, start: datetime, end: datetime) -> pd.DataFrame | None:
+        weather, prices, auxdata = await asyncio.gather(
+            self.weatherstore.get_data(start, end),
+            self.pricestore.get_data(start, end),
+            self.auxstore.get_data(start, end)
+        )
 
-        df = pd.concat([weather, auxdata], axis=1).dropna()
-        df = pd.concat([df, prices], axis=1)
+        df = pd.concat([weather, auxdata], axis=1, sort=True)
 
+        
+        if self.region.use_entsoe_load_forecast:
+            entsoedata = await self.entsoestore.get_data(start, end)
+            if len(entsoedata) > 0:
+                df = pd.concat([df, entsoedata], axis=1, sort=True)
+
+        if self.region.use_de_nat_gas_price:
+            gasprices = await self.gasstore.get_data(start, end)
+            gasprices = gasprices.reindex(weather.index).ffill()
+            df = pd.concat([df, gasprices], axis=1, sort=True)
+
+        df = pd.concat([df, prices], axis=1, sort=True)
         return df
 
-    async def refresh_weather(self, start : datetime, end: datetime):
+    async def refresh_forecasts(self, start : datetime, end: datetime):
         """
             Will re-fetch everything starting from yesterday during next training
             Not sure when past data becomes "stable", so better be sure and fetch a bit more
-            TODO: might want to make this more robust to keep old weather data in case OpenMeteo is not reachable
         """
         await self.weatherstore.refresh_range(start, end)
+        await self.entsoestore.refresh_range(start, end)
 
 
-    async def refresh_prices(self) -> bool:
-        """
-        true if actual new prices are available
-        """
-        lastknown = self.pricestore.get_last_known()
-        if lastknown is None:
-            return True
-
-        updated = await self.pricestore.fetch_missing_data(lastknown, datetime.now(timezone.utc) + timedelta(days=3))
-        if not updated:
-            return False
-
-        lastafter = self.pricestore.get_last_known()
-        return lastafter is not None and lastafter != lastknown
-    
     def cleanup(self):
         """
         Delete data older than 1 year
@@ -132,6 +153,8 @@ class PricePredictor:
         self.weatherstore.drop_before(cutoff)
         self.pricestore.drop_before(cutoff)
         self.auxstore.drop_before(cutoff)
+        self.entsoestore.drop_before(cutoff)
+        self.gasstore.drop_before(cutoff)
 
 
 
