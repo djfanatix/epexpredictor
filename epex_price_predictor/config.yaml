@@ -1,20 +1,27 @@
-name: "EPEX Price Predictor (BE)"
-slug: epex_price_predictor
+name: "EPEX Predictor API"
+slug: epexpredictor
+description: "EPEX price predictor API (FastAPI)"
 version: "1.0.0"
-description: "Belgian day-ahead price prediction using ELIA + ENTSO-E"
 url: https://github.com/djfanatix/epexpredictor
+
 arch:
   - amd64
   - arm64
   - armv7
-  - armhf
-  - aarch64
-  - i386
-startup: services
+
+startup: application
 boot: auto
+
+ports:
+  8000/tcp: 8000
+
+ports_description:
+  8000/tcp: "EPEX Predictor API"
+
 options:
   entsoe_api_key: ""
   timezone: "Europe/Brussels"
+
 schema:
   entsoe_api_key: str
   timezone: str
